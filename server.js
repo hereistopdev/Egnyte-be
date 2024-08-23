@@ -31,6 +31,8 @@ app.post("/api/token", async (req, res) => {
         },
       }
     );
+    console.log(client_id);
+
     res.json(response.data);
   } catch (error) {
     console.error(
