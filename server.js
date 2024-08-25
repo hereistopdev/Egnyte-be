@@ -44,9 +44,9 @@ app.post("/api/token", async (req, res) => {
 });
 
 // Endpoint to fetch data from Egnyte file system
-app.get("/api/files", async (req, res) => {
+app.post("/api/files", async (req, res) => {
   const accessToken = req.headers.authorization;
-  const { path } = req.query;
+  const path = req.body.path;
 
   try {
     const response = await axios.get(
