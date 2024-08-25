@@ -122,6 +122,8 @@ app.get("/api/filedown", async (req, res) => {
 });
 
 async function fetchFolderData(accessToken, folderPath) {
+  console.log(accessToken, folderPath);
+
   try {
     const response = await axios.get(
       `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
@@ -137,8 +139,12 @@ async function fetchFolderData(accessToken, folderPath) {
 
     // Collect current folder path
     allPaths.push({
-      type: "folder",
+      name: data.name,
       path: data.path,
+      extension: data.is_folder ? "" : data.name.split(".").pop().toLowerCase(),
+      created: new Date(data.uploaded).toLocaleString(),
+      modified: new Date(data.last_modified).toLocaleString(),
+      type: "folder",
     });
 
     // Collect subfolder paths and recursively fetch their data
@@ -152,8 +158,14 @@ async function fetchFolderData(accessToken, folderPath) {
     if (data.files && data.files.length > 0) {
       for (const file of data.files) {
         allPaths.push({
-          type: "file",
+          name: file.name,
           path: file.path,
+          extension: file.is_folder
+            ? ""
+            : file.name.split(".").pop().toLowerCase(),
+          created: new Date(file.uploaded).toLocaleString(),
+          modified: new Date(file.last_modified).toLocaleString(),
+          type: "file",
         });
       }
     }
@@ -161,7 +173,7 @@ async function fetchFolderData(accessToken, folderPath) {
     return allPaths;
   } catch (error) {
     console.error(`Error fetching data for path ${folderPath}:`, error.message);
-    return [];
+    return allPaths;
   }
 }
 
@@ -177,42 +189,58 @@ async function writePathsToCSV(paths, outputFilePath) {
   await csv.writeRecords(paths);
 }
 
-app.get("/api/download", async (req, res) => {
+function convertPathsToCSV(paths) {
+  // Ensure to escape any commas, newlines, or quotes within the data
+  const escapeCSVField = (field) => {
+    if (field.includes('"')) {
+      field = '"' + field.replace(/"/g, '""') + '"';
+    }
+    if (field.includes(",") || field.includes("\n")) {
+      field = '"' + field + '"';
+    }
+    return field;
+  };
+
+  const header = "Name,Type,Created,Modified,Extension,Path\n";
+  const rows = paths
+    .map(
+      (p) =>
+        `${escapeCSVField(p.name)},${escapeCSVField(p.type)},${escapeCSVField(
+          p.created
+        )},${escapeCSVField(p.modified)},${escapeCSVField(
+          p.extension
+        )},${escapeCSVField(p.path)}`
+    )
+    .join("\n");
+
+  return header + rows;
+}
+app.post("/api/download", async (req, res) => {
   const accessToken = req.headers.authorization;
-  const { folderpath } = req.query || "/";
+  const { path } = req.body || "";
 
-  //   const paths = await fetchFolderData(accessToken, folderpath);
-  const paths = [
-    {
-      type: "folder",
-      path: "/",
-    },
-    {
-      type: "folder",
-      path: "/Private",
-    },
-    {
-      type: "folder",
-      path: "/Private/agonzalez",
-    },
-    {
-      type: "folder",
-      path: "/Private/agonzalez/210284.P USTX01 UPS A&B",
-    },
-    {
-      type: "folder",
-      path: "/Private/agonzalez/210284.P USTX01 UPS A&B/Notes",
-    },
-    {
-      type: "file",
-      path: "/Private/agonzalez/210284.P USTX01 UPS A&B/Notes/Meeting Notes 11.15.23.pdf",
-    },
-  ];
+  console.log("here", accessToken, path);
+  if (accessToken && path) {
+    const paths = await fetchFolderData(accessToken, path);
 
-  const outputFilePath = path.join(__dirname, folderpath + ".csv");
-  await writePathsToCSV(paths, outputFilePath);
+    const csvContent = convertPathsToCSV(paths); // You'll need to implement this function
 
-  res.json(paths);
+    // Set headers to force download
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${path.replace(/[\/\\?%*:|"<>]/g, "_")}.csv"`
+    );
+    res.setHeader("Content-Type", "text/csv");
+
+    // Send CSV content
+    res.send(csvContent);
+    // const outputFilePath = path.join(__dirname, folderpath + ".csv");
+    // await writePathsToCSV(paths, outputFilePath);
+
+    // res.json(paths);
+  } else {
+    res.json({ error: "No token or path" });
+  }
 });
 
 const PORT = process.env.PORT || 8001;
