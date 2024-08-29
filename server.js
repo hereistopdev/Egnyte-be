@@ -123,6 +123,7 @@ app.get("/api/filedown", async (req, res) => {
 
 async function fetchFolderData(accessToken, folderPath) {
   console.log(accessToken, folderPath);
+  const allPaths = [];
 
   try {
     const response = await axios.get(
@@ -135,7 +136,6 @@ async function fetchFolderData(accessToken, folderPath) {
     );
 
     const data = response.data;
-    const allPaths = [];
 
     // Collect current folder path
     allPaths.push({
@@ -203,7 +203,7 @@ function convertPathsToCSV(paths) {
 
   const header = "Name,Type,Created,Modified,Extension,Path\n";
   const rows = paths
-    .map(
+    ?.map(
       (p) =>
         `${escapeCSVField(p.name)},${escapeCSVField(p.type)},${escapeCSVField(
           p.created
