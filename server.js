@@ -10,7 +10,33 @@ const fs = require("fs");
 const app = express();
 app.use(cors()); // Enable CORS
 app.use(bodyParser.json());
-1;
+
+const http = require("http");
+const WebSocket = require("ws");
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+const archiver = require("archiver");
+
+let clients = {};
+
+wss.on("connection", (ws) => {
+  const id = new Date().getTime();
+  clients[id] = ws;
+
+  ws.on("close", () => {
+    delete clients[id];
+  });
+});
+
+function sendProgressToClients(progress) {
+  Object.values(clients).forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ progress }));
+    }
+  });
+}
+
 // Endpoint to get the access token
 app.post("/api/token", async (req, res) => {
   const { username, password, client_id, client_secret } = req.body;
@@ -95,102 +121,9 @@ app.get("/api/filedown", async (req, res) => {
     console.error("Error redirecting request:", error.message);
     res.status(500).send("Error handling request.");
   }
-  // const fileName = path.basename(filePath); // Extract file name from the path
-  // const localFilePath = path.join(__dirname, fileName);
-
-  // // Save the file to the local filesystem
-  // fs.writeFileSync(localFilePath, response.data);
-
-  // res.download(localFilePath, fileName, (err) => {
-  //   if (err) {
-  //     console.error("File download error:", err);
-  //     res.status(500).send("Failed to download the file");
-  //   }
-  //   // Delete the file after download to free up space
-  //   fs.unlinkSync(localFilePath);
-  // });
-
-  // const contentType = response.headers["content-type"];
-  // const contentDisposition = response.headers["content-disposition"];
-
-  // res.setHeader("Content-Type", contentType);
-  // if (contentDisposition) {
-  //   res.setHeader("Content-Disposition", contentDisposition);
-  // }
-
-  // // res.send(response.body); // Send the binary data
 });
 
-async function fetchFolderData(accessToken, folderPath) {
-  console.log(accessToken, folderPath);
-  const allPaths = [];
-
-  try {
-    const response = await axios.get(
-      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
-      {
-        headers: {
-          Authorization: accessToken,
-        },
-      }
-    );
-
-    const data = response.data;
-
-    // Collect current folder path
-    allPaths.push({
-      name: data.name,
-      path: data.path,
-      extension: data.is_folder ? "" : data.name.split(".").pop().toLowerCase(),
-      created: new Date(data.uploaded).toLocaleString(),
-      modified: new Date(data.last_modified).toLocaleString(),
-      type: "folder",
-    });
-
-    // Collect subfolder paths and recursively fetch their data
-    if (data.folders && data.folders.length > 0) {
-      for (const folder of data.folders) {
-        allPaths.push(...(await fetchFolderData(accessToken, folder.path)));
-      }
-    }
-
-    // Collect file paths
-    if (data.files && data.files.length > 0) {
-      for (const file of data.files) {
-        allPaths.push({
-          name: file.name,
-          path: file.path,
-          extension: file.is_folder
-            ? ""
-            : file.name.split(".").pop().toLowerCase(),
-          created: new Date(file.uploaded).toLocaleString(),
-          modified: new Date(file.last_modified).toLocaleString(),
-          type: "file",
-        });
-      }
-    }
-
-    return allPaths;
-  } catch (error) {
-    console.error(`Error fetching data for path ${folderPath}:`, error.message);
-    return allPaths;
-  }
-}
-
-async function writePathsToCSV(paths, outputFilePath) {
-  const csv = csvWriter({
-    path: outputFilePath,
-    header: [
-      { id: "type", title: "TYPE" },
-      { id: "path", title: "PATH" },
-    ],
-  });
-
-  await csv.writeRecords(paths);
-}
-
 function convertPathsToCSV(paths) {
-  // Ensure to escape any commas, newlines, or quotes within the data
   const escapeCSVField = (field) => {
     if (field.includes('"')) {
       field = '"' + field.replace(/"/g, '""') + '"';
@@ -215,35 +148,179 @@ function convertPathsToCSV(paths) {
 
   return header + rows;
 }
+
+async function fetchFolderData(accessToken, folderPath, progressCallback) {
+  const allPaths = [];
+
+  try {
+    const response = await axios.get(
+      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
+      {
+        headers: {
+          Authorization: accessToken,
+        },
+      }
+    );
+
+    const data = response.data;
+
+    allPaths.push({
+      name: data.name,
+      path: data.path,
+      extension: data.is_folder ? "" : data.name.split(".").pop().toLowerCase(),
+      created: new Date(data.uploaded).toLocaleString(),
+      modified: new Date(data.last_modified).toLocaleString(),
+      type: "folder",
+    });
+
+    if (progressCallback) {
+      progressCallback(allPaths.length);
+    }
+
+    if (data.folders && data.folders.length > 0) {
+      for (const folder of data.folders) {
+        allPaths.push(
+          ...(await fetchFolderData(accessToken, folder.path, progressCallback))
+        );
+      }
+    }
+
+    if (data.files && data.files.length > 0) {
+      for (const file of data.files) {
+        allPaths.push({
+          name: file.name,
+          path: file.path,
+          extension: file.is_folder
+            ? ""
+            : file.name.split(".").pop().toLowerCase(),
+          created: new Date(file.uploaded).toLocaleString(),
+          modified: new Date(file.last_modified).toLocaleString(),
+          type: "file",
+        });
+
+        if (progressCallback) {
+          progressCallback(allPaths.length);
+        }
+      }
+    }
+
+    return allPaths;
+  } catch (error) {
+    console.error(`Error fetching data for path ${folderPath}:`, error.message);
+    return allPaths;
+  }
+}
+
 app.post("/api/download", async (req, res) => {
   const accessToken = req.headers.authorization;
   const { path } = req.body || "";
 
-  console.log("here", accessToken, path);
   if (accessToken && path) {
-    const paths = await fetchFolderData(accessToken, path);
+    let totalItems = 0;
+    const paths = await fetchFolderData(accessToken, path, (currentCount) => {
+      totalItems += currentCount;
+      sendProgressToClients(totalItems);
+    });
 
-    const csvContent = convertPathsToCSV(paths); // You'll need to implement this function
+    const csvContent = convertPathsToCSV(paths);
 
-    // Set headers to force download
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${path.replace(/[\/\\?%*:|"<>]/g, "_")}.csv"`
     );
     res.setHeader("Content-Type", "text/csv");
 
-    // Send CSV content
     res.send(csvContent);
-    // const outputFilePath = path.join(__dirname, folderpath + ".csv");
-    // await writePathsToCSV(paths, outputFilePath);
-
-    // res.json(paths);
   } else {
     res.json({ error: "No token or path" });
   }
 });
 
+async function fetchAllFiles(accessToken, folderPath, archive) {
+  console.log("Folder path: ", folderPath);
+
+  try {
+    const response = await axios.get(
+      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
+      {
+        headers: {
+          Authorization: accessToken,
+        },
+      }
+    );
+
+    const data = response.data;
+
+    // Fetch and store files in the current folder
+    if (data.files && data.files.length > 0) {
+      for (const file of data.files) {
+        console.log("file's path: ", file.path);
+        const fileResponse = await axios.get(
+          `https://schweiger.egnyte.com/pubapi/v1/fs-content/${file.path}`,
+          {
+            headers: {
+              Authorization: accessToken,
+            },
+            responseType: "stream",
+          }
+        );
+
+        // Append file to the archive
+        const relativePath = file.path.replace(`${folderPath}/`, "");
+        archive.append(fileResponse.data, { name: relativePath });
+      }
+    }
+
+    // Recursively fetch and store files in subfolders
+    if (data.folders && data.folders.length > 0) {
+      for (const folder of data.folders) {
+        await fetchAllFiles(accessToken, folder.path, archive);
+      }
+    }
+  } catch (error) {
+    console.error(
+      `Error fetching files for folder ${folderPath}:`,
+      error.message
+    );
+    throw error;
+  }
+}
+
+app.get("/api/folder-download", async (req, res) => {
+  const accessToken = req.headers.authorization;
+  const { folderPath } = req.query;
+
+  try {
+    // Set up the zip file
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${folderPath.split("/").pop()}.zip"`
+    );
+    res.setHeader("Content-Type", "application/zip");
+
+    const archive = archiver("zip", {
+      store: true, // Sets the compression level
+    });
+    archive.on("error", (err) => {
+      console.error("Archive error:", err.message);
+      res.status(500).send({ error: err.message });
+    });
+
+    archive.pipe(res);
+
+    // Fetch all files and add them to the archive
+    await fetchAllFiles(accessToken, folderPath, archive);
+
+    // Finalize the archive (this is important to signal the end of the stream)
+    archive.finalize();
+    console.log("Archive finalized successfully", archive);
+  } catch (error) {
+    console.error("Error downloading folder:", error.message);
+    res.status(500).send("Error handling folder download.");
+  }
+});
+
 const PORT = process.env.PORT || 8001;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
