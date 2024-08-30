@@ -183,10 +183,14 @@ function convertPathsToCSV(paths) {
 
 async function fetchFolderData(accessToken, folderPath, progressCallback) {
   const allPaths = [];
+  console.log(
+    folderPath,
+    `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`
+  );
 
   try {
     const response = await axios.get(
-      `https://schweiger.egnyte.com/pubapi/v1/fs${folderPath}`,
+      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
       {
         headers: {
           Authorization: accessToken,
