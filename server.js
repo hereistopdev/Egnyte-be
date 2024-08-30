@@ -94,11 +94,14 @@ app.post("/api/files", async (req, res) => {
   }
 });
 
-app.get("/api/filedown", async (req, res) => {
+app.post("/api/filedown", async (req, res) => {
   const accessToken = req.headers.authorization;
-  const { filePath } = req.query;
+  const { filePath } = req.body;
+
+  console.log("Request to download file:", filePath);
 
   try {
+    // Fetch the file from the remote server
     const response = await axios.get(
       `https://schweiger.egnyte.com/pubapi/v1/fs-content/${filePath}`,
       {
@@ -109,17 +112,46 @@ app.get("/api/filedown", async (req, res) => {
       }
     );
 
-    let fileName = filePath.split("/").pop();
-
+    const fileName = filePath.split("/").pop();
     const contentType = mime.lookup(fileName) || "application/octet-stream";
 
-    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    // Set headers for the file download
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(fileName)}"`
+    );
     res.setHeader("Content-Type", contentType);
 
+    const totalLength = parseInt(response.headers["content-length"], 10);
+    let downloadedLength = 0;
+
+    // Listen to the 'data' event to track progress
+    response.data.on("data", (chunk) => {
+      downloadedLength += chunk.length;
+      const progress = (downloadedLength / totalLength) * 100;
+
+      // Send progress to clients
+      sendProgressToClients(Math.round(progress));
+    });
+
+    // Pipe the data stream from the remote file to the client
     response.data.pipe(res);
+
+    response.data.on("end", () => {
+      console.log(`File ${fileName} successfully streamed to client.`);
+    });
+
+    response.data.on("error", (err) => {
+      console.error(`Error streaming file ${fileName}:`, err.message);
+      if (!res.headersSent) {
+        res.status(500).send("Error streaming the file.");
+      }
+    });
   } catch (error) {
-    console.error("Error redirecting request:", error.message);
-    res.status(500).send("Error handling request.");
+    console.error("Error fetching the file:", error.message);
+    if (!res.headersSent) {
+      res.status(500).send("Error handling request.");
+    }
   }
 });
 
@@ -236,8 +268,13 @@ app.post("/api/download", async (req, res) => {
   }
 });
 
-async function fetchAllFiles(accessToken, folderPath, archive) {
-  console.log("Folder path: ", folderPath);
+async function fetchAllFiles(
+  accessToken,
+  folderPath,
+  archive,
+  progressCallback
+) {
+  console.log(`Fetching folder path: ${folderPath}`);
 
   try {
     const response = await axios.get(
@@ -251,12 +288,15 @@ async function fetchAllFiles(accessToken, folderPath, archive) {
 
     const data = response.data;
 
-    // Fetch and store files in the current folder
-    if (data.files && data.files.length > 0) {
-      for (const file of data.files) {
-        console.log("file's path: ", file.path);
+    let totalFiles = (data.files || []).length;
+    let processedFiles = 0;
+
+    // Fetch and store files in the current folder sequentially
+    for (const file of data.files || []) {
+      console.log(`Fetching file: ${file.path}`);
+      try {
         const fileResponse = await axios.get(
-          `https://schweiger.egnyte.com/pubapi/v1/fs-content/${file.path}`,
+          `https://schweiger.egnyte.com/pubapi/v1/fs-content${file.path}`,
           {
             headers: {
               Authorization: accessToken,
@@ -265,18 +305,64 @@ async function fetchAllFiles(accessToken, folderPath, archive) {
           }
         );
 
-        // Append file to the archive
         const relativePath = file.path.replace(`${folderPath}/`, "");
-        archive.append(fileResponse.data, { name: relativePath });
+
+        await new Promise((resolve, reject) => {
+          const fileStream = fileResponse.data;
+
+          fileStream.on("end", () => {
+            console.log(`Finished streaming file: ${file.path}`);
+            processedFiles++;
+            const progress = Math.round((processedFiles / totalFiles) * 100);
+
+            // Send progress update if a callback is provided
+            if (progressCallback) {
+              progressCallback(progress);
+            }
+
+            resolve();
+          });
+
+          fileStream.on("error", (streamErr) => {
+            console.error(
+              `Stream error for file ${file.path}:`,
+              streamErr.message
+            );
+            reject(streamErr);
+          });
+
+          archive
+            .append(fileStream, { name: relativePath })
+            .on("close", () => {
+              console.log(`Finished writing file to archive: ${relativePath}`);
+            })
+            .on("error", (archiveErr) => {
+              console.error(
+                `Archive append error for file ${file.path}:`,
+                archiveErr.message
+              );
+              reject(archiveErr);
+            });
+        });
+      } catch (fileError) {
+        console.error(`Error fetching file ${file.path}:`, fileError.message);
+        throw fileError;
       }
     }
 
     // Recursively fetch and store files in subfolders
-    if (data.folders && data.folders.length > 0) {
-      for (const folder of data.folders) {
-        await fetchAllFiles(accessToken, folder.path, archive);
-      }
+    for (const folder of data.folders || []) {
+      const subfolderFiles = await fetchAllFiles(
+        accessToken,
+        folder.path,
+        archive,
+        progressCallback
+      );
+      totalFiles += subfolderFiles.totalFiles;
+      processedFiles += subfolderFiles.processedFiles;
     }
+
+    return { totalFiles, processedFiles };
   } catch (error) {
     console.error(
       `Error fetching files for folder ${folderPath}:`,
@@ -286,34 +372,44 @@ async function fetchAllFiles(accessToken, folderPath, archive) {
   }
 }
 
-app.get("/api/folder-download", async (req, res) => {
+app.post("/api/folder-download", async (req, res) => {
   const accessToken = req.headers.authorization;
-  const { folderPath } = req.query;
+  const { folderPath } = req.body;
+  const outputPath = path.join(__dirname, `${folderPath.split("/").pop()}.zip`);
 
   try {
-    // Set up the zip file
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${folderPath.split("/").pop()}.zip"`
-    );
-    res.setHeader("Content-Type", "application/zip");
+    const output = fs.createWriteStream(outputPath);
+    const archive = archiver("zip", { store: true });
 
-    const archive = archiver("zip", {
-      store: true, // Sets the compression level
-    });
     archive.on("error", (err) => {
       console.error("Archive error:", err.message);
       res.status(500).send({ error: err.message });
     });
 
-    archive.pipe(res);
+    archive.pipe(output);
 
-    // Fetch all files and add them to the archive
-    await fetchAllFiles(accessToken, folderPath, archive);
+    let totalFiles = 0;
+    let processedFiles = 0;
 
-    // Finalize the archive (this is important to signal the end of the stream)
-    archive.finalize();
-    console.log("Archive finalized successfully", archive);
+    await fetchAllFiles(accessToken, folderPath, archive, (progress) => {
+      sendProgressToClients(progress); // Send progress updates via WebSocket
+    });
+
+    await archive.finalize();
+
+    output.on("close", () => {
+      res.download(outputPath, (err) => {
+        if (err) {
+          console.error("Error sending file:", err.message);
+          res.status(500).send("Failed to download the file.");
+        }
+
+        // Optional: Delete the file after sending it
+        fs.unlink(outputPath, (err) => {
+          if (err) console.error("Error deleting file:", err.message);
+        });
+      });
+    });
   } catch (error) {
     console.error("Error downloading folder:", error.message);
     res.status(500).send("Error handling folder download.");
