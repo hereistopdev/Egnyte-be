@@ -182,15 +182,16 @@ function convertPathsToCSV(paths) {
 }
 
 async function fetchFolderData(accessToken, folderPath, progressCallback) {
+  if (folderPath[0] !== "/") folderPath = "/" + folderPath;
   const allPaths = [];
   console.log(
     folderPath,
-    `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`
+    `https://schweiger.egnyte.com/pubapi/v1/fs${folderPath}`
   );
 
   try {
     const response = await axios.get(
-      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
+      `https://schweiger.egnyte.com/pubapi/v1/fs${folderPath}`,
       {
         headers: {
           Authorization: accessToken,
@@ -218,7 +219,11 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
     if (data.folders && data.folders.length > 0) {
       for (const folder of data.folders) {
         allPaths.push(
-          ...(await fetchFolderData(accessToken, folder.path, progressCallback))
+          ...(await fetchFolderData(
+            accessToken,
+            folder.path.slice(1),
+            progressCallback
+          ))
         );
       }
     }
