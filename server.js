@@ -272,6 +272,7 @@ async function fetchAllFiles(
   accessToken,
   folderPath,
   archive,
+  processedFiles = 0,
   progressCallback
 ) {
   console.log(`Fetching folder path: ${folderPath}`);
@@ -289,7 +290,6 @@ async function fetchAllFiles(
     const data = response.data;
 
     let totalFiles = (data.files || []).length;
-    let processedFiles = 0;
 
     // Fetch and store files in the current folder sequentially
     for (const file of data.files || []) {
@@ -317,7 +317,7 @@ async function fetchAllFiles(
 
             // Send progress update if a callback is provided
             if (progressCallback) {
-              progressCallback(progress);
+              progressCallback(processedFiles);
             }
 
             resolve();
@@ -356,6 +356,7 @@ async function fetchAllFiles(
         accessToken,
         folder.path,
         archive,
+        processedFiles,
         progressCallback
       );
       totalFiles += subfolderFiles.totalFiles;
@@ -391,8 +392,8 @@ app.post("/api/folder-download", async (req, res) => {
     let totalFiles = 0;
     let processedFiles = 0;
 
-    await fetchAllFiles(accessToken, folderPath, archive, (progress) => {
-      sendProgressToClients(progress); // Send progress updates via WebSocket
+    await fetchAllFiles(accessToken, folderPath, archive, 0, (progress) => {
+      sendProgressToClients(progress);
     });
 
     await archive.finalize();
