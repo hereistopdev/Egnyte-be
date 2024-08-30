@@ -186,7 +186,7 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
 
   try {
     const response = await axios.get(
-      `https://schweiger.egnyte.com/pubapi/v1/fs/${folderPath}`,
+      `https://schweiger.egnyte.com/pubapi/v1/fs${folderPath}`,
       {
         headers: {
           Authorization: accessToken,
@@ -195,6 +195,8 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
     );
 
     const data = response.data;
+
+    console.log(data);
 
     allPaths.push({
       name: data.name,
