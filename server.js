@@ -218,6 +218,7 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
 
     if (data.folders && data.folders.length > 0) {
       for (const folder of data.folders) {
+        console.log("New", folder);
         allPaths.push(
           ...(await fetchFolderData(
             accessToken,
