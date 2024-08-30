@@ -201,7 +201,7 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
 
     const data = response.data;
 
-    console.log(data);
+    // console.log(data);
 
     allPaths.push({
       name: data.name,
@@ -212,9 +212,9 @@ async function fetchFolderData(accessToken, folderPath, progressCallback) {
       type: "folder",
     });
 
-    // if (progressCallback) {
-    //   progressCallback(allPaths.length);
-    // }
+    if (progressCallback) {
+      progressCallback(allPaths.length);
+    }
 
     if (data.folders && data.folders.length > 0) {
       for (const folder of data.folders) {
